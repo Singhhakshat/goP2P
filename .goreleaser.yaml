@@ -33,18 +33,22 @@ builds:
 archives:
   - id: "client-archive"
     builds:
-      - p2p-client # Only put the CLI in this archive
+      - p2p-client
     format: tar.gz
     format_overrides:
       - goos: windows
         format: zip
-    name_template: "p2p-share_{{ .Os }}_{{ .Arch }}"
+    name_template: "P2P-Share_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
   - id: "server-archive"
     builds:
-      - p2p-server # Only put the Relay Server in this archive
+      - p2p-server
     format: tar.gz
-    name_template: "p2p-relay_{{ .Os }}_{{ .Arch }}"
+    # Add this to ensure Windows server builds are zipped!
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "P2P-Relay-Server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: 'checksums.txt'
