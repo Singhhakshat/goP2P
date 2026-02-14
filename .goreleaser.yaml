@@ -1,0 +1,53 @@
+version: 2
+project_name: goP2P
+
+before:
+  hooks:
+    - go mod tidy 
+
+builds:
+# --- BUILD 1: THE CLI TOOL ---
+  - id: "p2p-client"
+    main: ./main.go
+    binary: p2p-share
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+      
+# --- BUILD 2: THE RELAY SERVER ---
+  - id: "p2p-server"
+    main: ./matchmaker/main.go 
+    binary: p2p-relay
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: "client-archive"
+    builds:
+      - p2p-client # Only put the CLI in this archive
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "p2p-share_{{ .Os }}_{{ .Arch }}"
+
+  - id: "server-archive"
+    builds:
+      - p2p-server # Only put the Relay Server in this archive
+    format: tar.gz
+    name_template: "p2p-relay_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
