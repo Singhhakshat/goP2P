@@ -1,0 +1,9 @@
+This document will contain everything you need to know to understand this project/application
+
+The folder structure
+-> /cmd - The CLI commands live here
+-> /p2p - The code that handles TCP connections and file streaming
+-> /crypto - Logic to generate the secret hash
+|
+|- hash.go - Hash generator
+
