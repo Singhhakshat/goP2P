@@ -1,66 +1,86 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"sync"
 )
 
-type peerData struct {
-	IP   string `json:"ip"`
-	Port string `json:"port"`
-}
-
 // Global state to store hashes and IPs.
 var (
-	peers = make(map[string]peerData)
-	mutex = &sync.Mutex{}
+	senders = make(map[string]net.Conn)
+	mutex   = &sync.Mutex{}
 )
 
 func main() {
-	// register the API endpoints
-	http.HandleFunc("/register", registerHandler)
-	http.HandleFunc("/lookup", lookupHandler)
+	// 1. start a HTTP server for Hash registration
+	go func() {
+		http.HandleFunc("/register", func(writer http.ResponseWriter, request *http.Request) {
+			hash := request.URL.Query().Get("hash")
 
-	fmt.Println("Matchmaker server running on port 8080")
+			fmt.Printf("registered hash %s\n", hash)
+			writer.WriteHeader(http.StatusOK)
+		})
 
-	// start the http server
-	err := http.ListenAndServe(":8080", nil)
+		fmt.Println("Matchmaker HTTP running on port 8080")
+		http.ListenAndServe(":8080", nil)
+	}()
+
+	// 2. start the TCP relay server
+	fmt.Println(">> matchmaker relay working on :9000 <<")
+	ln, err := net.Listen("tcp", ":9000")
 	if err != nil {
-		fmt.Println("Server failure: ", err)
-	}
-}
-
-func registerHandler(writer http.ResponseWriter, request *http.Request) {
-	hash := request.URL.Query().Get("hash")
-	ip := request.URL.Query().Get("ip")
-	port := request.URL.Query().Get("port")
-
-	if hash == "" || ip == "" || port == "" {
-		http.Error(writer, "Missing parameters", http.StatusBadRequest)
+		fmt.Println("TCP relay failed:", err)
 		return
 	}
 
-	mutex.Lock()
-	peers[hash] = peerData{IP: ip, Port: port}
-	mutex.Unlock()
-
-	fmt.Printf("Registered hash %s -> %s:%s\n", hash, ip, port)
-	writer.WriteHeader(http.StatusOK)
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			continue
+		}
+		go handleRelayConnection(conn)
+	}
 }
 
-func lookupHandler(writer http.ResponseWriter, request *http.Request) {
-	hash := request.URL.Query().Get("hash")
-
-	mutex.Lock()
-	peer, exists := peers[hash]
-
-	if !exists {
-		http.Error(writer, "Data not found", http.StatusNotFound)
+func handleRelayConnection(conn net.Conn) {
+	buf := make([]byte, 11)
+	_, error := conn.Read(buf)
+	if error != nil {
+		conn.Close()
 		return
 	}
 
-	writer.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(writer).Encode(peer)
+	message := string(buf)
+	role := message[:3]
+	hash := message[4:]
+
+	mutex.Lock()
+	if role == "SND" {
+		fmt.Printf("Sender connected for hash %s\n", hash)
+		senders[hash] = conn
+		mutex.Unlock()
+	}
+
+	if role == "RCV" {
+		senderConn, exists := senders[hash]
+		if exists {
+			delete(senders, hash)
+			mutex.Unlock()
+
+			fmt.Printf("Stitching connections for hash %s\n", hash)
+			//stitching connections together
+			go func() {
+				io.Copy(conn, senderConn)
+				conn.Close()
+				senderConn.Close()
+			}()
+		} else {
+			fmt.Println("Reciever connected but no sender found")
+			conn.Close()
+			mutex.Unlock()
+		}
+	}
 }
