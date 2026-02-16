@@ -1,11 +1,12 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"          //For printing to the console (think console.log or System.out.println).
 	"goP2P/crypto" //The internal package we created earlier
-	"goP2P/p2p"    // internal package
+
+	// internal package
 	"io"
+	"net"
 	"net/http"
 	"os" //For interacting with the operating system, such as exiting the program.
 
@@ -13,13 +14,8 @@ import (
 )
 
 // The address of our Matchmaker server
-const matchmakerURL = "http://localhost:8080"
-
-// PeerData represents the JSON structure we expect from the Matchmaker
-type PeerData struct {
-	IP   string `json:"ip"`
-	Port string `json:"port"`
-}
+const matchmakerURL = "gop2p-production.up.railway.app"
+const matchmakerTCP = "shortline.proxy.rlwy.net:56002"
 
 var rootCommand = &cobra.Command{
 	Use:     "p2p-share",
@@ -34,41 +30,41 @@ var sendCommand = &cobra.Command{
 	Args:    cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		fileName := args[0]
+
+		// 1. Check if file exists
+		file, err := os.Open(fileName)
+		if err != nil {
+			fmt.Printf("Error: Could not open file '%s'\n", fileName)
+			return
+		}
+		defer file.Close()
+
+		// 2. Generate Hash
 		code := crypto.GenerateCode()
 		fmt.Printf("Your secret hash for connection : %s\n", code)
 
-		// 1. getting public IP for sender
-		fmt.Println(">> Getting public IP <<")
-		resp, IPErr := http.Get("https://api.ipify.org")
-		if IPErr != nil {
-			fmt.Printf("Error getting public IP")
+		// 1. Register via HTTP
+		registerURL := matchmakerURL + "/register?hash=" + code
+		http.Get(registerURL)
+
+		// 3. Connect to the relay via TCP
+		conn, err := net.Dial("tcp", matchmakerTCP)
+		if err != nil {
+			fmt.Println("Could not connect to relay: ", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer conn.Close()
 
-		ip, readErr := io.ReadAll(resp.Body)
-		if readErr != nil {
-			fmt.Println("Error parsing IP response")
-		}
-		publicIP := string(ip)
-		fmt.Printf("Public IP detected : %s\n", publicIP)
+		// 3. Tell the matchmaker we are the sender
+		nametag := fmt.Sprintf("SND:%-6s ", code)
+		conn.Write([]byte(nametag[:11]))
 
-		// 2. register this hash with the matchmaker
-		registerURL := matchmakerURL + "/register?hash=" + code + "&ip=" + publicIP + "&port=3000"
-		resp, err := http.Get(registerURL)
-		if err != nil && resp.StatusCode != http.StatusOK {
-			fmt.Println("Error: Could not reach the matchmaker server")
-			return
-		}
-		defer resp.Body.Close()
+		// 4. stream the file to the relay
+		fmt.Println("Sending file")
+		io.Copy(conn, file)
 
-		fmt.Println("Registered with matchmaker successfully")
+		fmt.Println("File sent successfully")
 
-		// 3. starting our p2p server
-		error := p2p.StartServer("3000", fileName)
-		if error != nil {
-			fmt.Println("Error starting server", err)
-		}
 	},
 }
 
@@ -79,31 +75,32 @@ var recieveCommand = &cobra.Command{
 	Args:    cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		hash := args[0]
-		fmt.Printf("looking up sender using hash %s\n", hash)
 
-		// 1. HTTP GET: Ask the Matchmaker for the IP associated with this hash
-		lookupURL := matchmakerURL + "/lookup?hash=" + hash
-		resp, lookupErr := http.Get(lookupURL)
-		if lookupErr != nil && resp.StatusCode != http.StatusOK {
-			fmt.Println("Hash not found of matchmaker is offline")
-			return
-		}
-		defer resp.Body.Close()
-
-		// 2. decode the JSON response body to get the sender IP and port
-		var peer PeerData
-		decoderError := json.NewDecoder(resp.Body).Decode(&peer)
-		if decoderError != nil {
-			fmt.Println("Error parsing matchmaker response")
-			return
-		}
-
-		// 3. starting p2p server
-		outputFileName := "downloaded_" + hash + ".txt"
-		err := p2p.ReceiveFile(peer.IP, peer.Port, outputFileName)
+		// 1. connecting to the relay via TCP
+		conn, err := net.Dial("tcp", matchmakerTCP)
 		if err != nil {
-			fmt.Printf("Error occured while recieving the file %v\n", err)
+			fmt.Println("Error connecting to the matchmaker")
+			return
 		}
+		defer conn.Close()
+
+		// 2. Tell the matchmaker we are the reciever for the given hash
+		nametag := fmt.Sprintf("RCV:%-6s ", hash)
+		conn.Write([]byte(nametag[:11]))
+
+		// 3. Stream the file from matchmaker to the disk
+		outputFile := "downloaded_" + hash + ".txt"
+		file, err := os.Create(outputFile)
+		if err != nil {
+			fmt.Println("Error creating file")
+			return
+		}
+		defer file.Close()
+
+		// 4. Download the stream
+		fmt.Println("Downloading file...")
+		io.Copy(file, conn)
+		fmt.Println("Download completed")
 	},
 }
 
